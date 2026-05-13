@@ -609,6 +609,40 @@ class XhsOpenSearchTabTool(_XhsToolBase):
         return _emit_payload(ctx, f"xhs_search_tab_{label}", payload)
 
 
+class XhsSelectTimeFilterTool(_XhsToolBase):
+    name = "xhs_select_time_filter"
+    description = (
+        "Open Xiaohongshu's search-result filter menu and select a publish-time "
+        "filter such as `一周内`. Use this immediately after xhs_search_notes "
+        "when the user requires a time filter. It hovers/clicks the visible "
+        "`筛选` control and returns `ok=true` only when the requested time "
+        "filter was found and the filtered search state was confirmed."
+    )
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "description": "Publish-time filter label to select. Default: 一周内.",
+                    "default": "一周内",
+                },
+            },
+        }
+
+    async def execute(self, params: dict, ctx: ToolContext) -> str:
+        err = await _require_xhs(self._bridge)
+        if err:
+            return err
+        label = str(params.get("label") or "一周内").strip()
+        adapter = self._adapter(ctx)
+        payload = await adapter.select_search_time_filter(label)
+        payload.update({"site": "xiaohongshu", "action": self.name})
+        return _emit_payload(ctx, f"xhs_time_filter_{label}", payload)
+
+
 class XhsOpenNoteTool(_XhsToolBase):
     name = "xhs_open_note"
     description = (
@@ -1189,6 +1223,7 @@ def make_xhs_tools(
     return [
         XhsSearchNotesTool(bridge, ext_bridge=ext_bridge, media=media),
         XhsOpenSearchTabTool(bridge, ext_bridge=ext_bridge, media=media),
+        XhsSelectTimeFilterTool(bridge, ext_bridge=ext_bridge, media=media),
         XhsOpenNoteTool(bridge, ext_bridge=ext_bridge, media=media),
         XhsCloseNoteTool(bridge, ext_bridge=ext_bridge, media=media),
         XhsReadNoteTool(bridge, ext_bridge=ext_bridge, media=media),
@@ -1202,6 +1237,7 @@ def make_xhs_tools(
 __all__ = [
     "XhsSearchNotesTool",
     "XhsOpenSearchTabTool",
+    "XhsSelectTimeFilterTool",
     "XhsOpenNoteTool",
     "XhsCloseNoteTool",
     "XhsReadNoteTool",

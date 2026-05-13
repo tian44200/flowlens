@@ -150,10 +150,38 @@ function extractSearchTabs() {
   return tabs;
 }
 
+function visibleElementTextCandidates() {
+  return $$('button, a, div, span, li').filter((el) => {
+    if (!(el instanceof HTMLElement)) return false;
+    if (!isVisibleElement(el)) return false;
+    const label = text(el);
+    if (!label || label.length > 24) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width >= 8 && rect.height >= 8;
+  });
+}
+
+function findSearchFilterTrigger() {
+  const candidates = visibleElementTextCandidates().filter((el) => {
+    const label = text(el);
+    if (!/(筛选|过滤|排序)/.test(label)) return false;
+    const rect = el.getBoundingClientRect();
+    // Prefer controls near the search-result tab row instead of card text.
+    return rect.top < Math.max(260, window.innerHeight * 0.35);
+  });
+  candidates.sort((a, b) => {
+    const ar = a.getBoundingClientRect();
+    const br = b.getBoundingClientRect();
+    return br.left - ar.left;
+  });
+  return candidates[0] || null;
+}
+
 function detectSearchPageState() {
   const cards = extractSearchCards();
   const tabs = extractSearchTabs();
   const activeTab = tabs.find(tab => tab.active)?.label || '';
+  const filterTrigger = findSearchFilterTrigger();
   const pageState = detectState();
   const input = findVisibleSearchInput();
   const noResultText = firstText([
@@ -179,6 +207,20 @@ function detectSearchPageState() {
     page_state: pageState,
     card_count: cards.length,
     tabs,
+    filter_trigger: filterTrigger ? {
+      label: text(filterTrigger),
+      rect: (() => {
+        const rect = filterTrigger.getBoundingClientRect();
+        return {
+          x: Math.round(rect.left + rect.width / 2),
+          y: Math.round(rect.top + rect.height / 2),
+          top: Math.round(rect.top),
+          left: Math.round(rect.left),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        };
+      })(),
+    } : null,
     active_filter: activeTab,
     input_keyword: input && typeof input.value === 'string' ? input.value.trim() : '',
     url_keyword: urlKeyword,

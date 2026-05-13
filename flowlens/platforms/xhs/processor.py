@@ -464,6 +464,188 @@ class XHSSiteAdapter:
             "cards": [card.to_tool_dict() for card in cards],
         }
 
+    async def select_search_time_filter(self, label: str = "一周内") -> dict:
+        t0 = time.time()
+        result = await self._select_search_time_filter_with_cdp(label)
+        self.timing.record("search_time_filter", time.time() - t0)
+        cards = await self.extract_search_cards() if result.get("ok") and result.get("confirmed") else []
+        return {
+            "ok": bool(result.get("ok") and result.get("confirmed")),
+            "requested": label,
+            "result": result,
+            "count": len(cards),
+            "cards": [card.to_tool_dict() for card in cards],
+            "reason": "" if result.get("confirmed") else str(result.get("error") or "time_filter_not_confirmed"),
+        }
+
+    async def _select_search_time_filter_with_cdp(self, label: str = "一周内") -> dict:
+        """Select a visible XHS search time filter with a real browser click."""
+        aliases = ["一周内", "最近一周", "近一周"] if label == "一周内" else [label]
+        state_before = await self.get_search_page_state()
+        trigger_label_before = str((state_before.get("filter_trigger") or {}).get("label") or "")
+        preopened_options = await self._search_filter_options_via_js()
+        menu_already_open = any(str(item.get("label", "")).strip() in aliases for item in preopened_options)
+        setup_js = r"""
+const text = (el) => el ? (el.textContent || '').trim() : '';
+const visible = (el) => {
+  if (!(el instanceof HTMLElement)) return false;
+  const style = getComputedStyle(el);
+  if (style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity) === 0) return false;
+  const r = el.getBoundingClientRect();
+  return r.width >= 8 && r.height >= 8 && r.bottom >= 0 && r.right >= 0 && r.top <= innerHeight && r.left <= innerWidth;
+};
+const nodes = [...document.querySelectorAll('button,a,div,span,li')].filter(visible);
+const trigger = nodes
+  .filter((el) => /筛选/.test(text(el)) && el.getBoundingClientRect().top < Math.max(260, innerHeight * 0.35))
+  .sort((a, b) => b.getBoundingClientRect().left - a.getBoundingClientRect().left)[0];
+if (!trigger) return {ok:false, error:'filter_trigger_not_found'};
+trigger.scrollIntoView({block:'center', inline:'center'});
+const r = trigger.getBoundingClientRect();
+const eventInit = {bubbles:true, cancelable:true, view:window, clientX:r.left+r.width/2, clientY:r.top+r.height/2};
+for (const name of ['pointerover','mouseover','mouseenter','mousemove']) trigger.dispatchEvent(new MouseEvent(name, eventInit));
+return {ok:true, trigger_text:text(trigger), trigger_rect:{x:Math.round(r.left+r.width/2), y:Math.round(r.top+r.height/2), top:Math.round(r.top), left:Math.round(r.left), width:Math.round(r.width), height:Math.round(r.height)}};
+"""
+        if menu_already_open:
+            opened_value = {"ok": True, "already_open": True, "options_seen": preopened_options}
+        else:
+            opened = await self.bridge.run_js(setup_js)
+            opened_value = opened.get("value", opened.get("result", opened))
+            if not isinstance(opened_value, dict) or not opened_value.get("ok"):
+                return opened_value if isinstance(opened_value, dict) else {"ok": False, "error": str(opened_value or opened)}
+
+        await asyncio.sleep(0.45)
+        options_before = await self._search_filter_options_via_js()
+        click_js = (
+            "const aliases = " + json.dumps(aliases, ensure_ascii=False) + r""";
+const text = (el) => el ? (el.textContent || '').trim().replace(/\s+/g, ' ') : '';
+const visible = (el) => {
+  if (!(el instanceof HTMLElement)) return false;
+  const style = getComputedStyle(el);
+  if (style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity) === 0) return false;
+  const r = el.getBoundingClientRect();
+  return r.width >= 8 && r.height >= 8 && r.bottom >= 0 && r.right >= 0 && r.top <= innerHeight && r.left <= innerWidth;
+};
+const target = [...document.querySelectorAll('button,a,div,span,li')]
+  .filter(visible)
+  .find((el) => aliases.includes(text(el)));
+if (!target) {
+  return {ok:false, error:'time_filter_option_not_found', aliases};
+}
+const r = target.getBoundingClientRect();
+return {ok:true, selected:text(target), rect:{x:Math.round(r.left+r.width/2), y:Math.round(r.top+r.height/2), top:Math.round(r.top), left:Math.round(r.left), width:Math.round(r.width), height:Math.round(r.height)}};
+"""
+        )
+        clicked = await self.bridge.run_js(click_js)
+        clicked_value = clicked.get("value", clicked.get("result", clicked))
+        if not isinstance(clicked_value, dict) or not clicked_value.get("ok"):
+            return {
+                "ok": False,
+                "error": str(clicked_value.get("error") if isinstance(clicked_value, dict) else clicked_value),
+                "opened": opened_value,
+                "options_before": options_before,
+            }
+
+        trigger_rect = opened_value.get("trigger_rect") if isinstance(opened_value.get("trigger_rect"), dict) else {}
+        target_rect = clicked_value.get("rect") if isinstance(clicked_value.get("rect"), dict) else {}
+        trigger_x = int(trigger_rect.get("x") or 0)
+        trigger_y = int(trigger_rect.get("y") or 0)
+        target_x = int(target_rect.get("x") or 0)
+        target_y = int(target_rect.get("y") or 0)
+        real_events: list[dict] = []
+        overlay_state: dict = {}
+        if target_x and target_y:
+            hide_overlay = await self.bridge.run_js(
+                r"""
+const ids = ['flowlens-watch-overlay', 'flowlens-watch-root'];
+const previous = [];
+for (const id of ids) {
+  const el = document.getElementById(id);
+  if (!el) continue;
+  previous.push({id, display: el.style.display || ''});
+  el.style.display = 'none';
+}
+return {ok:true, previous};
+"""
+            )
+            overlay_state = hide_overlay.get("value", hide_overlay.get("result", hide_overlay))
+        try:
+            if trigger_x and trigger_y:
+                real_events.append({"move_trigger": await self.bridge.mouse_move(trigger_x, trigger_y)})
+                await asyncio.sleep(0.25)
+            if target_x and target_y:
+                real_events.append({"move_target": await self.bridge.mouse_move(target_x, target_y)})
+                await asyncio.sleep(0.2)
+                real_events.append({"click_target": await self.bridge.click_at(target_x, target_y)})
+        finally:
+            previous = overlay_state.get("previous") if isinstance(overlay_state, dict) else []
+            await self.bridge.run_js(
+                "const previous = " + json.dumps(previous, ensure_ascii=False) + r""";
+for (const item of previous || []) {
+  const el = document.getElementById(item.id);
+  if (el) el.style.display = item.display || '';
+}
+return {ok:true};
+"""
+            )
+
+        await asyncio.sleep(1.5)
+        state = await self.get_search_page_state()
+        options_after = await self._search_filter_options_via_js()
+        selected_label = str(clicked_value.get("selected", "")).strip()
+        trigger_label = str((state.get("filter_trigger") or {}).get("label") or "")
+        confirmed_by_option = any(
+            str(item.get("label", "")).strip() in aliases and item.get("active")
+            for item in options_after
+        )
+        confirmed_by_trigger = "已筛选" in trigger_label and "已筛选" not in trigger_label_before
+        confirmed = bool(clicked_value.get("ok")) and (confirmed_by_option or confirmed_by_trigger)
+        return {
+            "ok": True,
+            "selected": selected_label,
+            "requested": label,
+            "confirmed": confirmed,
+            "confirmed_by": "option_active" if confirmed_by_option else ("filter_trigger" if confirmed_by_trigger else ""),
+            "method": "filter_menu_cdp_click",
+            "real_events": real_events,
+            "opened": opened_value,
+            "options_before": options_before,
+            "options_after": options_after,
+            "state_before": state_before,
+            "state": state,
+        }
+
+    async def _search_filter_options_via_js(self) -> list[dict]:
+        js = r"""
+const text = (el) => el ? (el.textContent || '').trim().replace(/\s+/g, ' ') : '';
+const visible = (el) => {
+  if (!(el instanceof HTMLElement)) return false;
+  const style = getComputedStyle(el);
+  if (style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity) === 0) return false;
+  const r = el.getBoundingClientRect();
+  return r.width >= 8 && r.height >= 8 && r.bottom >= 0 && r.right >= 0 && r.top <= innerHeight && r.left <= innerWidth;
+};
+const hint = /(综合|最新|最多点赞|最多评论|最多收藏|不限|视频|图文|一天内|一周内|半年内|已看过|未看过|已关注|同城|附近)/;
+const seen = new Set();
+return [...document.querySelectorAll('button,a,div,span,li')]
+  .filter(visible)
+  .map((el) => {
+    const label = text(el);
+    if (!label || label.length > 24 || !hint.test(label)) return null;
+    if (seen.has(label)) return null;
+    seen.add(label);
+    const r = el.getBoundingClientRect();
+    return {
+      label,
+      active: /active|selected|current/.test(String(el.className || '')) || el.getAttribute('aria-selected') === 'true',
+      rect: {x:Math.round(r.left+r.width/2), y:Math.round(r.top+r.height/2), top:Math.round(r.top), left:Math.round(r.left), width:Math.round(r.width), height:Math.round(r.height)}
+    };
+  })
+  .filter(Boolean);
+"""
+        result = await self.bridge.run_js(js)
+        value = result.get("value", result.get("result", []))
+        return value if isinstance(value, list) else []
+
     async def open_note(
         self,
         *,
