@@ -464,27 +464,67 @@ class XHSSiteAdapter:
             "cards": [card.to_tool_dict() for card in cards],
         }
 
+    @staticmethod
+    def _filter_group_aliases(group: str) -> tuple[str, list[str]]:
+        normalized = re.sub(r"\s+", "", str(group or "").strip())
+        groups = {
+            "排序依据": ["排序依据", "排序", "排序方式"],
+            "笔记类型": ["笔记类型", "类型", "内容类型"],
+            "发布时间": ["发布时间", "时间", "发布于"],
+            "搜索范围": ["搜索范围", "范围"],
+            "位置距离": ["位置距离", "位置", "距离"],
+        }
+        for canonical, aliases in groups.items():
+            if normalized in aliases:
+                return canonical, aliases
+        return normalized or "发布时间", [normalized or "发布时间"]
+
+    @staticmethod
+    def _filter_label_aliases(label: str) -> list[str]:
+        normalized = re.sub(r"\s+", "", str(label or "").strip())
+        aliases = {
+            "一周内": ["一周内", "最近一周", "近一周"],
+            "一天内": ["一天内", "24小时", "24小时内", "一日内"],
+            "半年内": ["半年内", "半年以内"],
+            "最多点赞": ["最多点赞", "点赞最多"],
+            "最多评论": ["最多评论", "评论最多"],
+            "最多收藏": ["最多收藏", "收藏最多"],
+        }
+        return aliases.get(normalized, [normalized])
+
     async def select_search_time_filter(self, label: str = "一周内") -> dict:
+        return await self.select_search_filter(group="发布时间", label=label)
+
+    async def select_search_filter(self, *, group: str, label: str) -> dict:
         t0 = time.time()
-        result = await self._select_search_time_filter_with_cdp(label)
-        self.timing.record("search_time_filter", time.time() - t0)
+        result = await self._select_search_filter_with_cdp(group=group, label=label)
+        self.timing.record("search_filter", time.time() - t0)
         cards = await self.extract_search_cards() if result.get("ok") and result.get("confirmed") else []
         return {
             "ok": bool(result.get("ok") and result.get("confirmed")),
-            "requested": label,
+            "requested": {"group": result.get("group", group), "label": label},
             "result": result,
             "count": len(cards),
             "cards": [card.to_tool_dict() for card in cards],
-            "reason": "" if result.get("confirmed") else str(result.get("error") or "time_filter_not_confirmed"),
+            "reason": "" if result.get("confirmed") else str(result.get("error") or "search_filter_not_confirmed"),
         }
 
-    async def _select_search_time_filter_with_cdp(self, label: str = "一周内") -> dict:
-        """Select a visible XHS search time filter with a real browser click."""
-        aliases = ["一周内", "最近一周", "近一周"] if label == "一周内" else [label]
+    async def _select_search_filter_with_cdp(self, *, group: str, label: str) -> dict:
+        """Select a visible XHS search filter option with a real browser click."""
+        canonical_group, group_aliases = self._filter_group_aliases(group)
+        label_aliases = self._filter_label_aliases(label)
         state_before = await self.get_search_page_state()
         trigger_label_before = str((state_before.get("filter_trigger") or {}).get("label") or "")
         preopened_options = await self._search_filter_options_via_js()
-        menu_already_open = any(str(item.get("label", "")).strip() in aliases for item in preopened_options)
+        seen_filter_group = any(
+            str(item.get("label", "")).strip() in group_aliases
+            for item in preopened_options
+        )
+        seen_filter_label = any(
+            str(item.get("label", "")).strip() in label_aliases
+            for item in preopened_options
+        )
+        menu_already_open = seen_filter_group and seen_filter_label
         setup_js = r"""
 const text = (el) => el ? (el.textContent || '').trim() : '';
 const visible = (el) => {
@@ -497,7 +537,15 @@ const visible = (el) => {
 const nodes = [...document.querySelectorAll('button,a,div,span,li')].filter(visible);
 const trigger = nodes
   .filter((el) => /筛选/.test(text(el)) && el.getBoundingClientRect().top < Math.max(260, innerHeight * 0.35))
-  .sort((a, b) => b.getBoundingClientRect().left - a.getBoundingClientRect().left)[0];
+  .sort((a, b) => {
+    const ta = text(a);
+    const tb = text(b);
+    const exactA = /^(筛选|已筛选)$/.test(ta) ? 1 : 0;
+    const exactB = /^(筛选|已筛选)$/.test(tb) ? 1 : 0;
+    if (exactA !== exactB) return exactB - exactA;
+    if (ta.length !== tb.length) return ta.length - tb.length;
+    return b.getBoundingClientRect().left - a.getBoundingClientRect().left;
+  })[0];
 if (!trigger) return {ok:false, error:'filter_trigger_not_found'};
 trigger.scrollIntoView({block:'center', inline:'center'});
 const r = trigger.getBoundingClientRect();
@@ -516,7 +564,8 @@ return {ok:true, trigger_text:text(trigger), trigger_rect:{x:Math.round(r.left+r
         await asyncio.sleep(0.45)
         options_before = await self._search_filter_options_via_js()
         click_js = (
-            "const aliases = " + json.dumps(aliases, ensure_ascii=False) + r""";
+            "const groupAliases = " + json.dumps(group_aliases, ensure_ascii=False) + ";\n"
+            "const labelAliases = " + json.dumps(label_aliases, ensure_ascii=False) + r""";
 const text = (el) => el ? (el.textContent || '').trim().replace(/\s+/g, ' ') : '';
 const visible = (el) => {
   if (!(el instanceof HTMLElement)) return false;
@@ -525,14 +574,55 @@ const visible = (el) => {
   const r = el.getBoundingClientRect();
   return r.width >= 8 && r.height >= 8 && r.bottom >= 0 && r.right >= 0 && r.top <= innerHeight && r.left <= innerWidth;
 };
-const target = [...document.querySelectorAll('button,a,div,span,li')]
+const groupLabels = ['排序依据', '笔记类型', '发布时间', '搜索范围', '位置距离'];
+const nodes = [...document.querySelectorAll('button,a,div,span,li')]
   .filter(visible)
-  .find((el) => aliases.includes(text(el)));
-if (!target) {
-  return {ok:false, error:'time_filter_option_not_found', aliases};
+  .map((el) => ({el, label: text(el), rect: el.getBoundingClientRect()}));
+const groups = nodes
+  .filter((item) => groupAliases.includes(item.label))
+  .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+const selectedGroup = groups[0];
+if (!selectedGroup) {
+  return {
+    ok:false,
+    error:'search_filter_group_not_found',
+    group_aliases: groupAliases,
+    available_groups: nodes.filter((item) => groupLabels.includes(item.label)).map((item) => item.label),
+  };
 }
+const nextGroup = nodes
+  .filter((item) => groupLabels.includes(item.label) && item.rect.top > selectedGroup.rect.top + 4)
+  .sort((a, b) => a.rect.top - b.rect.top)[0];
+const sectionBottom = nextGroup ? nextGroup.rect.top : innerHeight;
+const options = nodes
+  .filter((item) => (
+    labelAliases.includes(item.label)
+    && item.rect.top >= selectedGroup.rect.top
+    && item.rect.top < sectionBottom
+    && item.rect.left >= selectedGroup.rect.left - 4
+  ))
+  .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+const targetItem = options[0];
+if (!targetItem) {
+  return {
+    ok:false,
+    error:'search_filter_option_not_found',
+    group: selectedGroup.label,
+    label_aliases: labelAliases,
+    section_options: nodes
+      .filter((item) => item.rect.top >= selectedGroup.rect.top && item.rect.top < sectionBottom)
+      .map((item) => item.label)
+      .filter((label, index, labels) => label && labels.indexOf(label) === index),
+  };
+}
+const target = targetItem.el;
 const r = target.getBoundingClientRect();
-return {ok:true, selected:text(target), rect:{x:Math.round(r.left+r.width/2), y:Math.round(r.top+r.height/2), top:Math.round(r.top), left:Math.round(r.left), width:Math.round(r.width), height:Math.round(r.height)}};
+return {
+  ok:true,
+  group:selectedGroup.label,
+  selected:text(target),
+  rect:{x:Math.round(r.left+r.width/2), y:Math.round(r.top+r.height/2), top:Math.round(r.top), left:Math.round(r.left), width:Math.round(r.width), height:Math.round(r.height)}
+};
 """
         )
         clicked = await self.bridge.run_js(click_js)
@@ -592,17 +682,19 @@ return {ok:true};
         state = await self.get_search_page_state()
         options_after = await self._search_filter_options_via_js()
         selected_label = str(clicked_value.get("selected", "")).strip()
+        selected_group = str(clicked_value.get("group") or canonical_group).strip()
         trigger_label = str((state.get("filter_trigger") or {}).get("label") or "")
         confirmed_by_option = any(
-            str(item.get("label", "")).strip() in aliases and item.get("active")
+            str(item.get("label", "")).strip() in label_aliases and item.get("active")
             for item in options_after
         )
         confirmed_by_trigger = "已筛选" in trigger_label and "已筛选" not in trigger_label_before
         confirmed = bool(clicked_value.get("ok")) and (confirmed_by_option or confirmed_by_trigger)
         return {
             "ok": True,
+            "group": selected_group,
             "selected": selected_label,
-            "requested": label,
+            "requested": {"group": canonical_group, "label": label},
             "confirmed": confirmed,
             "confirmed_by": "option_active" if confirmed_by_option else ("filter_trigger" if confirmed_by_trigger else ""),
             "method": "filter_menu_cdp_click",
@@ -624,7 +716,7 @@ const visible = (el) => {
   const r = el.getBoundingClientRect();
   return r.width >= 8 && r.height >= 8 && r.bottom >= 0 && r.right >= 0 && r.top <= innerHeight && r.left <= innerWidth;
 };
-const hint = /(综合|最新|最多点赞|最多评论|最多收藏|不限|视频|图文|一天内|一周内|半年内|已看过|未看过|已关注|同城|附近)/;
+const hint = /(排序依据|笔记类型|发布时间|搜索范围|位置距离|综合|最新|最多点赞|最多评论|最多收藏|不限|视频|图文|一天内|一周内|半年内|24小时内|已看过|未看过|已关注|同城|附近)/;
 const seen = new Set();
 return [...document.querySelectorAll('button,a,div,span,li')]
   .filter(visible)

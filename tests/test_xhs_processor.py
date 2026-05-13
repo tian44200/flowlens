@@ -22,6 +22,16 @@ class XHSSearchTransitionTest(unittest.TestCase):
         self.assertFalse(XHSSiteAdapter._search_transition_ok(state, "南港AR1轮胎"))
 
 
+class XHSSearchFilterAliasTest(unittest.TestCase):
+    def test_filter_group_aliases_normalize_to_known_groups(self) -> None:
+        self.assertEqual(XHSSiteAdapter._filter_group_aliases(" 时间 ")[0], "发布时间")
+        self.assertEqual(XHSSiteAdapter._filter_group_aliases("排序方式")[0], "排序依据")
+
+    def test_filter_label_aliases_include_common_variants(self) -> None:
+        self.assertIn("最近一周", XHSSiteAdapter._filter_label_aliases("一周内"))
+        self.assertIn("点赞最多", XHSSiteAdapter._filter_label_aliases("最多点赞"))
+
+
 class XHSReadNoteTargetValidationTest(IsolatedAsyncioTestCase):
     async def test_read_note_raises_when_opened_note_id_does_not_match_expected_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -612,11 +612,8 @@ class XhsOpenSearchTabTool(_XhsToolBase):
 class XhsSelectTimeFilterTool(_XhsToolBase):
     name = "xhs_select_time_filter"
     description = (
-        "Open Xiaohongshu's search-result filter menu and select a publish-time "
-        "filter such as `一周内`. Use this immediately after xhs_search_notes "
-        "when the user requires a time filter. It hovers/clicks the visible "
-        "`筛选` control and returns `ok=true` only when the requested time "
-        "filter was found and the filtered search state was confirmed."
+        "Shortcut for xhs_select_search_filter(group='发布时间', label=...). "
+        "Selects a publish-time filter such as `一天内`, `一周内`, or `半年内`."
     )
 
     @property
@@ -641,6 +638,45 @@ class XhsSelectTimeFilterTool(_XhsToolBase):
         payload = await adapter.select_search_time_filter(label)
         payload.update({"site": "xiaohongshu", "action": self.name})
         return _emit_payload(ctx, f"xhs_time_filter_{label}", payload)
+
+
+class XhsSelectSearchFilterTool(_XhsToolBase):
+    name = "xhs_select_search_filter"
+    description = (
+        "Open Xiaohongshu's search-result filter menu and select an option by "
+        "filter group and label. Supported groups include `排序依据`, `笔记类型`, "
+        "`发布时间`, `搜索范围`, and `位置距离`; example labels include `最多点赞`, "
+        "`视频`, `图文`, `一天内`, `一周内`, `未看过`, and `同城`. Returns `ok=true` "
+        "only when the requested option was found and the filtered state was confirmed."
+    )
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "group": {
+                    "type": "string",
+                    "description": "Filter group: 排序依据 / 笔记类型 / 发布时间 / 搜索范围 / 位置距离.",
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Filter option label inside the group, e.g. 一周内, 最多点赞, 视频, 未看过.",
+                },
+            },
+            "required": ["group", "label"],
+        }
+
+    async def execute(self, params: dict, ctx: ToolContext) -> str:
+        err = await _require_xhs(self._bridge)
+        if err:
+            return err
+        group = str(params.get("group") or "").strip()
+        label = str(params.get("label") or "").strip()
+        adapter = self._adapter(ctx)
+        payload = await adapter.select_search_filter(group=group, label=label)
+        payload.update({"site": "xiaohongshu", "action": self.name})
+        return _emit_payload(ctx, f"xhs_search_filter_{group}_{label}", payload)
 
 
 class XhsOpenNoteTool(_XhsToolBase):
@@ -1223,6 +1259,7 @@ def make_xhs_tools(
     return [
         XhsSearchNotesTool(bridge, ext_bridge=ext_bridge, media=media),
         XhsOpenSearchTabTool(bridge, ext_bridge=ext_bridge, media=media),
+        XhsSelectSearchFilterTool(bridge, ext_bridge=ext_bridge, media=media),
         XhsSelectTimeFilterTool(bridge, ext_bridge=ext_bridge, media=media),
         XhsOpenNoteTool(bridge, ext_bridge=ext_bridge, media=media),
         XhsCloseNoteTool(bridge, ext_bridge=ext_bridge, media=media),
@@ -1237,6 +1274,7 @@ def make_xhs_tools(
 __all__ = [
     "XhsSearchNotesTool",
     "XhsOpenSearchTabTool",
+    "XhsSelectSearchFilterTool",
     "XhsSelectTimeFilterTool",
     "XhsOpenNoteTool",
     "XhsCloseNoteTool",
