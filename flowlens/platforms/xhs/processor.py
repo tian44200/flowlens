@@ -492,9 +492,6 @@ class XHSSiteAdapter:
         }
         return aliases.get(normalized, [normalized])
 
-    async def select_search_time_filter(self, label: str = "一周内") -> dict:
-        return await self.select_search_filter(group="发布时间", label=label)
-
     async def select_search_filter(self, *, group: str, label: str) -> dict:
         t0 = time.time()
         result = await self._select_search_filter_with_cdp(group=group, label=label)

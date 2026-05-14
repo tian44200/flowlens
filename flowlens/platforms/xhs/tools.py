@@ -609,37 +609,6 @@ class XhsOpenSearchTabTool(_XhsToolBase):
         return _emit_payload(ctx, f"xhs_search_tab_{label}", payload)
 
 
-class XhsSelectTimeFilterTool(_XhsToolBase):
-    name = "xhs_select_time_filter"
-    description = (
-        "Shortcut for xhs_select_search_filter(group='发布时间', label=...). "
-        "Selects a publish-time filter such as `一天内`, `一周内`, or `半年内`."
-    )
-
-    @property
-    def parameters(self) -> dict:
-        return {
-            "type": "object",
-            "properties": {
-                "label": {
-                    "type": "string",
-                    "description": "Publish-time filter label to select. Default: 一周内.",
-                    "default": "一周内",
-                },
-            },
-        }
-
-    async def execute(self, params: dict, ctx: ToolContext) -> str:
-        err = await _require_xhs(self._bridge)
-        if err:
-            return err
-        label = str(params.get("label") or "一周内").strip()
-        adapter = self._adapter(ctx)
-        payload = await adapter.select_search_time_filter(label)
-        payload.update({"site": "xiaohongshu", "action": self.name})
-        return _emit_payload(ctx, f"xhs_time_filter_{label}", payload)
-
-
 class XhsSelectSearchFilterTool(_XhsToolBase):
     name = "xhs_select_search_filter"
     description = (
@@ -1260,7 +1229,6 @@ def make_xhs_tools(
         XhsSearchNotesTool(bridge, ext_bridge=ext_bridge, media=media),
         XhsOpenSearchTabTool(bridge, ext_bridge=ext_bridge, media=media),
         XhsSelectSearchFilterTool(bridge, ext_bridge=ext_bridge, media=media),
-        XhsSelectTimeFilterTool(bridge, ext_bridge=ext_bridge, media=media),
         XhsOpenNoteTool(bridge, ext_bridge=ext_bridge, media=media),
         XhsCloseNoteTool(bridge, ext_bridge=ext_bridge, media=media),
         XhsReadNoteTool(bridge, ext_bridge=ext_bridge, media=media),
@@ -1275,7 +1243,6 @@ __all__ = [
     "XhsSearchNotesTool",
     "XhsOpenSearchTabTool",
     "XhsSelectSearchFilterTool",
-    "XhsSelectTimeFilterTool",
     "XhsOpenNoteTool",
     "XhsCloseNoteTool",
     "XhsReadNoteTool",

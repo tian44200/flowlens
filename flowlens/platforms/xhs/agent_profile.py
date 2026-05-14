@@ -82,7 +82,6 @@ _SEARCH_TOOLS = {
     "xhs_search_notes",
     "xhs_open_search_tab",
     "xhs_select_search_filter",
-    "xhs_select_time_filter",
     "xhs_open_note",
     "xhs_close_note",
     "xhs_read_note",
